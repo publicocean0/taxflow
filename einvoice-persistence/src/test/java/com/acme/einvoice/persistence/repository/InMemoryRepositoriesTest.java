@@ -64,6 +64,11 @@ class InMemoryRepositoriesTest {
                 Optional.empty(),
                 Optional.empty(),
                 0,
+                Optional.empty(),
+                Optional.empty(),
+                0,
+                Optional.empty(),
+                Optional.empty(),
                 Map.of());
 
         repository.save(record);
@@ -97,6 +102,56 @@ class InMemoryRepositoriesTest {
         assertEquals(1, repository.findProcessable(Instant.now(), 10).size());
     }
 
+
+    @Test
+    void externalEventRepository_deduplicatesByServiceAndKey() {
+        InMemoryTransmissionExternalEventRepository repository = new InMemoryTransmissionExternalEventRepository();
+        ServiceId serviceId = ServiceId.random();
+        var event = new com.acme.einvoice.domain.model.TransmissionExternalEvent(
+                "ev-1",
+                serviceId,
+                Optional.empty(),
+                "tr-1",
+                Optional.empty(),
+                "WEBHOOK",
+                Optional.of("PENDING"),
+                Optional.of("Pending"),
+                Optional.of("EXT-1"),
+                "dup-1",
+                Optional.of("{}"),
+                Optional.empty(),
+                Instant.now(),
+                Optional.empty(),
+                Optional.empty(),
+                false,
+                Instant.now(),
+                Map.of()
+        );
+
+        repository.save(event);
+        repository.save(new com.acme.einvoice.domain.model.TransmissionExternalEvent(
+                "ev-2",
+                serviceId,
+                Optional.empty(),
+                "tr-1",
+                Optional.empty(),
+                "WEBHOOK",
+                Optional.of("PENDING"),
+                Optional.of("Pending"),
+                Optional.of("EXT-1"),
+                "dup-1",
+                Optional.of("{}"),
+                Optional.empty(),
+                Instant.now(),
+                Optional.empty(),
+                Optional.empty(),
+                false,
+                Instant.now(),
+                Map.of()
+        ));
+
+        assertEquals(1, repository.findByTransmissionId("tr-1").size());
+    }
     private record TestFiscalDocument(String id, ServiceId serviceId, long version) implements FiscalDocument {
         @Override public CountryCode countryCode() { return CountryCode.of("IT"); }
         @Override public String documentType() { return "INVOICE"; }

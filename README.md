@@ -4,98 +4,79 @@ TaxFlow è un servizio di e-invoicing dentro un ecosistema più ampio. Non è la
 
 ## Boundary ecosistemico
 
-La piattaforma centrale resta responsabile di:
-- tenant registry,
-- service registry,
-- identità/OAuth,
-- trust mTLS e rotazione certificati.
-
-TaxFlow integra quel modello tramite porte applicative (`EcosystemDirectoryService`, security ports) senza duplicare IAM o registry.
+La piattaforma centrale resta responsabile di tenant registry, service registry, identità/OAuth e trust mTLS.
+TaxFlow integra quel modello tramite porte applicative senza duplicare IAM o registry.
 
 ## Scoping operativo
 
-TaxFlow usa **`service_id` come chiave operativa primaria** per:
-- routing connector,
-- lookup documenti,
-- idempotency submission,
-- tracking transmission.
+TaxFlow usa **`service_id` come chiave operativa primaria** per routing, lookup documenti, idempotency e tracking transmission.
+`tenant_id` resta dato derivato dal service directory.
 
-Il `tenant_id` resta dato derivato dal service directory.
+## Submission vs reconciliation
 
-## Reliability model (intent + async execution)
+Il modello è separato in due fasi:
 
-Il submit ora è separato in due fasi:
+1. **Submission pipeline**
+    - submit intent crea `transmission_record` + outbox;
+    - async processor esegue `connector.submit`;
+    - stato locale passa a `SUBMITTED`/failure.
 
-1. **Submit intent (sincrona e breve)**
-   - valida richiesta e documento,
-   - crea `transmission_record` in `PENDING_SUBMISSION`,
-   - scrive evento `SubmissionRequested` in `outbox_event`,
-   - ritorna subito un riferimento trasmissione.
+2. **External status reconciliation pipeline**
+    - TaxFlow acquisisce evidenze esterne da polling o webhook;
+    - salva prima l’evidenza (`transmission_external_event`);
+    - traduce stato esterno in update interno normalizzato;
+    - applica transizione idempotente su `transmission_record`;
+    - traccia audit in `transmission_status_update`.
 
-2. **Execution async (fuori transazione originaria)**
-   - worker/processor legge outbox,
-   - prova claim con transizione stato outbox,
-   - esegue `connector.submit` fuori da transazioni DB lunghe,
-   - aggiorna stato trasmissione e outbox.
+## Polling e webhook ingestion model
 
-Questo evita side-effect remoti dentro la transazione iniziale e rende il modello più sicuro per CockroachDB e multi-node at-least-once processing.
+- **Polling**: `TransmissionStatusPollingService` trova trasmissioni eleggibili (`SUBMITTED`/`STATUS_PENDING` e `next_status_check_at` scaduto), invoca `SubmissionConnector.fetchStatus`, persiste evento esterno deduplicato.
+- **Webhook-ready ingestion**: `ConnectorWebhookIngestionService` espone un boundary applicativo interno (`IngestExternalStatusUpdateUseCase`) per ingest di update esterni service-scoped, con dedup e reconciliation immediata.
 
-## Transmission lifecycle
+## External evidence / audit model
 
-`TransmissionStatus` (foundation):
-- `PENDING_SUBMISSION`
-- `SUBMITTING`
-- `SUBMITTED`
-- `STATUS_PENDING`
-- `ACCEPTED`
-- `REJECTED`
-- `FAILED_RETRYABLE`
-- `FAILED_FINAL`
-- `CANCELLED`
+Nuova tabella: `transmission_external_event`.
+Campi chiave:
+- service scope (`service_id`, `transmission_id`),
+- `source_type` (`POLLING`, `WEBHOOK`, ...),
+- status esterno (`external_status_code`/label/reference),
+- `deduplication_key` unico per service,
+- payload raw/metadata,
+- `processed_at`, `reconciliation_outcome`, `duplicate`.
 
-La lifecycle trasmissione è separata dagli stati esterni country/connector. Le integrazioni traducono stato esterno verso stato interno tramite una fase di mapping successiva.
+`transmission_record` include metadata reconciliation:
+- `last_external_status_code`, `last_external_status_at`,
+- `reconciliation_version`,
+- `next_status_check_at`, `status_last_checked_at`.
 
-## Outbox pattern foundation
+## Duplicate / out-of-order philosophy
 
-`outbox_event` gestisce:
-- `status` (`PENDING`, `PROCESSING`, `PROCESSED`),
-- `processing_attempts`,
-- `processing_started_at`, `processed_at`,
-- `next_attempt_at`, `last_error`.
+TaxFlow assume at-least-once processing e multi-node concorrente.
+Correttezza ottenuta via:
+- deduplicazione persistente per `(service_id, deduplication_key)`,
+- reconciliation idempotente,
+- optimistic concurrency su `status_version`,
+- regole anti-regressione (eventi outdated o terminal state non regrediscono).
 
-Il processor è idempotente e multi-node safe su base DB-state:
-- claim eventi via transizione stato,
-- tolleranza duplicati,
-- retry su failure retryable.
+## Multi-node e CockroachDB implications
 
-## Status update foundation (polling/webhook-ready)
-
-È introdotto `transmission_status_update` per acquisire eventi esterni normalizzati:
-- sorgente (`source`),
-- codice esterno,
-- stato interno mappato,
-- payload raw,
-- metadata.
-
-Questo abilita futuri flussi polling/webhook senza accoppiare il core a uno specifico provider.
+- Nessuna coordinazione in-memory tra nodi.
+- Più nodi possono processare polling/reconciliation in parallelo.
+- Eventi duplicati e retry sono attesi.
+- Transazioni corte: evidence prima, poi apply.
+- Schema e indici restano service-centric e Cockroach-friendly.
 
 ## Schema persistence
 
 Migrazioni:
 - `V1__initial_taxflow_schema.sql`
 - `V2__transmission_outbox_reliability_foundation.sql`
-
-Tabelle core:
-- `fiscal_document`
-- `transmission_record`
-- `document_artifact`
-- `outbox_event`
-- `transmission_status_update`
+- `V3__external_status_reconciliation_foundation.sql`
 
 ## Deferred
 
-- adapter JDBC/Cockroach reale (al posto in-memory),
-- scheduler distribuito/cron robusto,
-- broker reale (Kafka/RabbitMQ) opzionale,
-- webhook receiver HTTP e signature verification,
-- regole di reconciliation connector-specific.
+- scheduler distribuito/cron production-grade,
+- adapter HTTP webhook + signature verification,
+- connector/country reconciliation matrix avanzata,
+- repair/ops UI,
+- adapter JDBC/Cockroach reale al posto repository in-memory.

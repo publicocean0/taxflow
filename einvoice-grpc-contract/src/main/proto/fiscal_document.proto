@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package com.acme.einvoice.grpc;
+
+service FiscalDocumentService {
+  rpc SubmitDocument(SubmitDocumentRequest) returns (SubmitDocumentResponse);
+}
+
+message SubmitDocumentRequest {
+  string tenant_id = 1;
+  string document_id = 2;
+}
+
+message SubmitDocumentResponse {
+  string transmission_id = 1;
+  string outcome = 2;
+}

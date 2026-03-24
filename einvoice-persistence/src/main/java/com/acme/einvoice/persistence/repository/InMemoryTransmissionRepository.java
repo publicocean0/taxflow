@@ -5,6 +5,9 @@ import com.acme.einvoice.domain.model.TransmissionRecord;
 import com.acme.einvoice.domain.model.TransmissionStatus;
 import com.acme.einvoice.domain.repository.TransmissionRepository;
 
+import java.time.Instant;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -85,6 +88,11 @@ public final class InMemoryTransmissionRepository implements TransmissionReposit
                     existing.lastErrorCode(),
                     existing.lastErrorMessage(),
                     existing.statusVersion() + 1,
+                    existing.lastExternalStatusCode(),
+                    existing.lastExternalStatusAt(),
+                    existing.reconciliationVersion(),
+                    existing.nextStatusCheckAt(),
+                    existing.statusLastCheckedAt(),
                     existing.details()
             );
         }).status() == TransmissionStatus.SUBMITTING;
@@ -93,6 +101,18 @@ public final class InMemoryTransmissionRepository implements TransmissionReposit
     @Override
     public boolean isInStatus(String transmissionId, TransmissionStatus status) {
         return findById(transmissionId).map(TransmissionRecord::status).filter(s -> s == status).isPresent();
+    }
+
+    @Override
+    public List<TransmissionRecord> findDueForStatusCheck(ServiceId serviceId, Instant now, int maxBatchSize) {
+        return transmissionsById.values().stream()
+                .filter(record -> record.serviceId().equals(serviceId))
+                .filter(record -> !record.status().isTerminal())
+                .filter(record -> record.status() == TransmissionStatus.SUBMITTED || record.status() == TransmissionStatus.STATUS_PENDING)
+                .filter(record -> record.nextStatusCheckAt().isEmpty() || !record.nextStatusCheckAt().get().isAfter(now))
+                .sorted(Comparator.comparing(TransmissionRecord::updatedAt))
+                .limit(maxBatchSize)
+                .toList();
     }
 
     private record TransmissionUniqKey(ServiceId serviceId, String documentId, String idempotencyKey) {

@@ -99,6 +99,11 @@ public final class SubmitDocumentService implements SubmitDocumentUseCase {
                 Optional.empty(),
                 Optional.empty(),
                 0,
+                Optional.empty(),
+                Optional.empty(),
+                0,
+                Optional.of(now.plusSeconds(300)),
+                Optional.empty(),
                 Map.of("tenantId", serviceRef.tenantId().value().toString())
         );
 

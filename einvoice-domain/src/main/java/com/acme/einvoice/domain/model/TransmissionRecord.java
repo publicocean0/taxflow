@@ -22,6 +22,11 @@ public record TransmissionRecord(
         Optional<String> lastErrorCode,
         Optional<String> lastErrorMessage,
         long statusVersion,
+        Optional<String> lastExternalStatusCode,
+        Optional<Instant> lastExternalStatusAt,
+        long reconciliationVersion,
+        Optional<Instant> nextStatusCheckAt,
+        Optional<Instant> statusLastCheckedAt,
         Map<String, String> details
 ) {
 }

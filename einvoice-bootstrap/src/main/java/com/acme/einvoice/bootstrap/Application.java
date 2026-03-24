@@ -1,6 +1,7 @@
 package com.acme.einvoice.bootstrap;
 
 import com.acme.einvoice.application.artifact.InMemoryArtifactStorage;
+import com.acme.einvoice.application.ecosystem.InMemoryEcosystemDirectoryService;
 import com.acme.einvoice.application.routing.DefaultRoutingService;
 import com.acme.einvoice.application.routing.InMemoryConnectorRegistry;
 import com.acme.einvoice.application.routing.InMemoryCountryModuleRegistry;
@@ -12,12 +13,16 @@ import com.acme.einvoice.application.tenant.InMemoryTenantConfigurationService;
 import com.acme.einvoice.application.tenant.SignaturePolicy;
 import com.acme.einvoice.application.tenant.TenantFiscalConfiguration;
 import com.acme.einvoice.common.model.CountryCode;
+import com.acme.einvoice.common.model.EcosystemServiceReference;
+import com.acme.einvoice.common.model.EcosystemTenantReference;
+import com.acme.einvoice.common.model.ServiceId;
 import com.acme.einvoice.common.model.TenantId;
 import com.acme.einvoice.connector.sdi.SdiSubmissionConnector;
 import com.acme.einvoice.connectors.spi.ConnectorId;
 import com.acme.einvoice.country.it.ItalyCountryModule;
 import com.acme.einvoice.country.spi.ValidationReport;
 import com.acme.einvoice.domain.repository.FiscalDocumentRepository;
+import com.acme.einvoice.persistence.repository.InMemoryTransmissionRepository;
 
 import java.util.List;
 import java.util.Map;
@@ -31,6 +36,7 @@ public final class Application {
     public static void main(String[] args) {
         CountryCode italy = CountryCode.of("IT");
         TenantId tenantId = new TenantId(UUID.fromString("00000000-0000-0000-0000-000000000001"));
+        ServiceId serviceId = new ServiceId(UUID.fromString("00000000-0000-0000-0000-000000000101"));
 
         var italyModule = new ItalyCountryModule(
                 (document, context) -> ValidationReport.valid(),
@@ -55,9 +61,10 @@ public final class Application {
                 new InMemoryCountryModuleRegistry(List.of(italyModule)),
                 new InMemoryConnectorRegistry(List.of(connector)),
                 new InMemoryTenantConfigurationService(Map.of(
-                        tenantId,
+                        serviceId,
                         new TenantFiscalConfiguration(
                                 tenantId,
+                                serviceId,
                                 Set.of(italy),
                                 Map.of(italy, new ConnectorBinding(italy, ConnectorId.of("SDI_DIRECT"))),
                                 EnvironmentProfile.TEST,
@@ -70,8 +77,13 @@ public final class Application {
         FiscalDocumentRepository documentRepository = new InMemoryBootstrapDocumentRepository();
         SubmitDocumentService submitDocumentService = new SubmitDocumentService(
                 documentRepository,
+                new InMemoryTransmissionRepository(),
                 routingService,
-                new InMemoryArtifactStorage()
+                new InMemoryArtifactStorage(),
+                new InMemoryEcosystemDirectoryService(
+                        Map.of(tenantId, new EcosystemTenantReference(tenantId, "Demo tenant")),
+                        Map.of(tenantId, List.of(new EcosystemServiceReference(tenantId, serviceId, "Billing service")))
+                )
         );
 
         System.out.println("eInvoice platform bootstrap initialized: " + submitDocumentService.getClass().getSimpleName());

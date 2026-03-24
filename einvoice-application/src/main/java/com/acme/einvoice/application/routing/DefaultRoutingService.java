@@ -6,7 +6,7 @@ import com.acme.einvoice.application.exception.TenantConfigurationNotFoundExcept
 import com.acme.einvoice.application.tenant.TenantConfigurationService;
 import com.acme.einvoice.application.tenant.TenantFiscalConfiguration;
 import com.acme.einvoice.common.model.CountryCode;
-import com.acme.einvoice.common.model.TenantId;
+import com.acme.einvoice.common.model.ServiceId;
 import com.acme.einvoice.connectors.spi.ConnectorId;
 import com.acme.einvoice.connectors.spi.ConnectorRegistry;
 import com.acme.einvoice.connectors.spi.SubmissionConnector;
@@ -38,16 +38,16 @@ public final class DefaultRoutingService implements RoutingService {
     }
 
     @Override
-    public SubmissionConnector resolveConnector(TenantId tenantId, CountryCode countryCode) {
-        TenantFiscalConfiguration configuration = tenantConfigurationService.getByTenantId(tenantId)
-                .orElseThrow(() -> new TenantConfigurationNotFoundException(tenantId));
+    public SubmissionConnector resolveConnector(ServiceId serviceId, CountryCode countryCode) {
+        TenantFiscalConfiguration configuration = tenantConfigurationService.getByServiceId(serviceId)
+                .orElseThrow(() -> new TenantConfigurationNotFoundException(serviceId));
 
         if (!configuration.isCountryEnabled(countryCode)) {
-            throw new TenantConfigurationNotFoundException(tenantId, countryCode);
+            throw new TenantConfigurationNotFoundException(serviceId, countryCode);
         }
 
         ConnectorId connectorId = configuration.connectorFor(countryCode)
-                .orElseThrow(() -> new TenantConfigurationNotFoundException(tenantId, countryCode));
+                .orElseThrow(() -> new TenantConfigurationNotFoundException(serviceId, countryCode));
 
         SubmissionConnector connector = connectorRegistry.get(connectorId);
         if (connector == null) {

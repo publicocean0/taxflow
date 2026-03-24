@@ -1,6 +1,11 @@
 package com.acme.einvoice.application.usecase;
 
-import com.acme.einvoice.common.model.TenantId;
+import com.acme.einvoice.common.model.ServiceId;
 
-public record SubmitDocumentCommand(TenantId tenantId, String documentId) {
+import java.util.Optional;
+
+public record SubmitDocumentCommand(ServiceId serviceId, String documentId, Optional<String> idempotencyKey) {
+    public SubmitDocumentCommand(ServiceId serviceId, String documentId) {
+        this(serviceId, documentId, Optional.empty());
+    }
 }

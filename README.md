@@ -1,74 +1,58 @@
-# taxflow
+# TaxFlow
 
-Skeleton iniziale per una piattaforma e-invoicing multi-country, multi-tenant, disegnata con core astratto + plugin paese + plugin connector.
+TaxFlow è un servizio di e-invoicing dentro un ecosistema più ampio. Non è la fonte autorevole per tenant master data, IAM/OAuth o gestione mTLS.
 
-## Struttura Maven multi-module
+## Boundary ecosistemico
 
-- `einvoice-common`: value objects condivisi (es. `CountryCode`, `TenantId`).
-- `einvoice-domain`: dominio fiscale universale (`FiscalDocument`, `Invoice`, `DocumentStatus`, repository ports).
-- `einvoice-country-spi`: SPI dei plugin paese (`CountryModule`, validator, renderer, status translator) + nuovo modello di validazione ricco.
-- `einvoice-connectors-spi`: SPI dei canali esterni (`SubmissionConnector`, `ConnectorId`, `SubmissionCommand`, `SubmissionResult`).
-- `einvoice-application`: use case applicativi, routing tenant-aware, configurazione fiscale tenant, artifact ports.
-- `einvoice-grpc-contract`: contratti `.proto` gRPC.
-- `einvoice-grpc-server`: facade inbound gRPC (adapter sottile verso use case).
-- `einvoice-country-it`: primo adapter paese-specifico per Italia (`ItalyCountryModule`).
-- `einvoice-connector-sdi`: primo connector tecnico di submission (`SdiSubmissionConnector`).
-- `einvoice-bootstrap`: entrypoint bootstrap runtime con wiring in-memory.
+La piattaforma centrale resta responsabile di:
+- tenant registry,
+- service registry,
+- identità/OAuth,
+- trust mTLS e rotazione certificati.
 
-## Routing layer tenant-aware
+TaxFlow integra quel modello tramite porte applicative (`EcosystemDirectoryService`, security ports) senza duplicare IAM o registry.
 
-L'orchestrazione di submission usa ora un livello di routing esplicito:
+## Scoping operativo (semplificato)
 
-- `RoutingService`: risolve `CountryModule` per `countryCode` e `SubmissionConnector` per `tenant + country`.
-- `CountryModuleRegistry`: lookup dei country module disponibili (`get`, `all`).
-- `ConnectorRegistry`: lookup dei connector disponibili (`get`, `all`).
-- `TenantConfigurationService`: fornisce la configurazione fiscale tenant.
+In questo step TaxFlow usa **`service_id` come chiave operativa primaria** per:
+- routing connector,
+- lookup documenti,
+- idempotency submission,
+- tracking transmission.
 
-La risoluzione fallisce con eccezioni applicative esplicite (`CountryModuleNotFoundException`, `TenantConfigurationNotFoundException`, `ConnectorNotFoundException`) invece di errori generici.
+Il `tenant_id` viene risolto a partire dal `service_id` tramite directory ecosistemica (proiezione locale opzionale).
 
-## Tenant fiscal configuration
+## Moduli
 
-È stato introdotto un modello minimo ma estendibile:
+- `einvoice-common`: value object condivisi (`TenantId`, `ServiceId`, riferimenti ecosistema).
+- `einvoice-domain`: modello + port di repository.
+- `einvoice-application`: orchestrazione submit e porte di integrazione.
+- `einvoice-persistence`: schema SQL CockroachDB-ready e adapter repository iniziali in-memory.
 
-- `TenantFiscalConfiguration`
-  - `tenantId`
-  - `enabledCountries`
-  - `connectorBindings` per paese (`ConnectorBinding`)
-  - `environmentProfile` (`TEST` / `PRODUCTION`)
-  - placeholders evolutivi: `SignaturePolicy`, `ArchivePolicy`
+## Schema persistence introdotto
 
-Per bootstrap/demo è presente `InMemoryTenantConfigurationService`.
+Migrazione: `einvoice-persistence/src/main/resources/db/migration/V1__initial_taxflow_schema.sql`.
 
-## Rich validation model
+Tabelle core:
+- `fiscal_document`
+- `transmission_record`
+- `document_artifact`
+- `outbox_event`
 
-Il contratto `CountryValidator` restituisce ora un `ValidationReport` ricco:
+Tabelle proiezione locale directory:
+- `ecosystem_tenant_ref`
+- `ecosystem_service_ref`
 
-- validità calcolata da severità (`ERROR` invalida, `WARNING` no)
-- `ValidationMessage` con:
-  - `code` machine-readable
-  - `message` human-readable
-  - `path` opzionale campo/segmento
-  - `severity` (`ERROR`, `WARNING`)
+### Scelte CockroachDB-oriented
+- PK UUID ovunque.
+- Niente serial/bigserial.
+- `version` per optimistic concurrency su `fiscal_document`.
+- Vincolo idempotenza su `transmission_record(service_id, document_id, submission_idempotency_key)`.
+- Campi canonici in colonna + JSONB per estensioni.
 
-L'`application service` interrompe il flusso con `ValidationFailedException` se il report è invalido.
+## Deferred
 
-## Submit orchestration (nuovo step)
-
-`SubmitDocumentService` ora:
-
-1. carica documento da repository,
-2. risolve country module tramite `RoutingService`,
-3. valida con `ValidationReport`,
-4. renderizza,
-5. persiste artifact renderizzato tramite `ArtifactStorage`,
-6. risolve connector tenant/country tramite `RoutingService`,
-7. invia al connector,
-8. ritorna `SubmitDocumentResult` strutturato.
-
-## Next planned steps
-
-1. Persistenza reale per tenant configuration e artifact storage.
-2. Firma digitale policy-driven (per tenant/country).
-3. Tracking asincrono submission status (polling/webhook/outbox).
-4. Mapping errori applicativi → status gRPC dedicati.
-5. Nuovi country modules e connector adapters oltre Italia/SDI.
+- Adapter JDBC/Cockroach reale (al posto in-memory).
+- Dispatcher outbox.
+- Client remoto directory ecosistema con caching.
+- Object storage reale per payload artifact.

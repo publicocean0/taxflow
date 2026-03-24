@@ -11,7 +11,7 @@ public record SubmitDocumentResult(
         String documentId,
         String transmissionId,
         String outcome,
-        Instant submittedAt,
+        Optional<Instant> submittedAt,
         Optional<String> externalReference,
         Optional<ArtifactReference> renderedArtifact,
         List<ValidationMessage> warnings,

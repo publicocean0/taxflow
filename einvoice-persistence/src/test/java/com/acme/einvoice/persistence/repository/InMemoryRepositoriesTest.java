@@ -4,9 +4,12 @@ import com.acme.einvoice.common.model.CountryCode;
 import com.acme.einvoice.common.model.ServiceId;
 import com.acme.einvoice.domain.model.DocumentLine;
 import com.acme.einvoice.domain.model.FiscalDocument;
+import com.acme.einvoice.domain.model.OutboxEvent;
+import com.acme.einvoice.domain.model.OutboxEventStatus;
 import com.acme.einvoice.domain.model.Party;
 import com.acme.einvoice.domain.model.TaxCategory;
 import com.acme.einvoice.domain.model.TransmissionRecord;
+import com.acme.einvoice.domain.model.TransmissionStatus;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -52,14 +55,46 @@ class InMemoryRepositoriesTest {
                 "SDI_DIRECT",
                 "idem-key-1",
                 Optional.of("EXT"),
-                "SUBMITTED",
+                TransmissionStatus.PENDING_SUBMISSION,
+                Optional.empty(),
                 Instant.now(),
                 Instant.now(),
+                0,
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                0,
                 Map.of());
 
         repository.save(record);
 
         assertThrows(IllegalStateException.class, () -> repository.save(record));
+    }
+
+    @Test
+    void outbox_retryableFailureRemainsProcessable() {
+        InMemoryOutboxEventRepository repository = new InMemoryOutboxEventRepository();
+        OutboxEvent event = new OutboxEvent(
+                "evt-1",
+                "TransmissionRecord",
+                "tr-1",
+                ServiceId.random(),
+                "SubmissionRequested",
+                "payload",
+                OutboxEventStatus.PENDING,
+                Instant.now(),
+                Optional.empty(),
+                Optional.empty(),
+                0,
+                Optional.empty(),
+                Optional.empty()
+        );
+        repository.save(event);
+
+        repository.tryMarkProcessing("evt-1", Instant.now());
+        repository.markRetryableFailure("evt-1", "temporary", Instant.now().minusSeconds(1));
+
+        assertEquals(1, repository.findProcessable(Instant.now(), 10).size());
     }
 
     private record TestFiscalDocument(String id, ServiceId serviceId, long version) implements FiscalDocument {

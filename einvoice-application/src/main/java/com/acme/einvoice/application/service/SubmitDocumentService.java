@@ -6,22 +6,21 @@ import com.acme.einvoice.application.artifact.ArtifactStorage;
 import com.acme.einvoice.application.ecosystem.EcosystemDirectoryService;
 import com.acme.einvoice.application.exception.DocumentNotFoundException;
 import com.acme.einvoice.application.exception.ServiceNotFoundException;
-import com.acme.einvoice.application.exception.SubmissionFailedException;
 import com.acme.einvoice.application.exception.ValidationFailedException;
 import com.acme.einvoice.application.routing.RoutingService;
 import com.acme.einvoice.application.usecase.SubmitDocumentCommand;
 import com.acme.einvoice.application.usecase.SubmitDocumentResult;
 import com.acme.einvoice.application.usecase.SubmitDocumentUseCase;
-import com.acme.einvoice.connectors.spi.SubmissionCommand;
-import com.acme.einvoice.connectors.spi.SubmissionConnector;
-import com.acme.einvoice.connectors.spi.SubmissionResult;
 import com.acme.einvoice.country.spi.CountryContext;
 import com.acme.einvoice.country.spi.CountryModule;
 import com.acme.einvoice.country.spi.RenderedDocument;
 import com.acme.einvoice.country.spi.ValidationReport;
-import com.acme.einvoice.domain.model.FiscalDocument;
+import com.acme.einvoice.domain.model.OutboxEvent;
+import com.acme.einvoice.domain.model.OutboxEventStatus;
 import com.acme.einvoice.domain.model.TransmissionRecord;
+import com.acme.einvoice.domain.model.TransmissionStatus;
 import com.acme.einvoice.domain.repository.FiscalDocumentRepository;
+import com.acme.einvoice.domain.repository.SubmissionIntentRepository;
 import com.acme.einvoice.domain.repository.TransmissionRepository;
 
 import java.time.Instant;
@@ -30,8 +29,10 @@ import java.util.Optional;
 import java.util.UUID;
 
 public final class SubmitDocumentService implements SubmitDocumentUseCase {
+    public static final String SUBMISSION_REQUESTED = "SubmissionRequested";
     private final FiscalDocumentRepository documentRepository;
     private final TransmissionRepository transmissionRepository;
+    private final SubmissionIntentRepository submissionIntentRepository;
     private final RoutingService routingService;
     private final ArtifactStorage artifactStorage;
     private final EcosystemDirectoryService ecosystemDirectoryService;
@@ -39,12 +40,14 @@ public final class SubmitDocumentService implements SubmitDocumentUseCase {
     public SubmitDocumentService(
             FiscalDocumentRepository documentRepository,
             TransmissionRepository transmissionRepository,
+            SubmissionIntentRepository submissionIntentRepository,
             RoutingService routingService,
             ArtifactStorage artifactStorage,
             EcosystemDirectoryService ecosystemDirectoryService
     ) {
         this.documentRepository = documentRepository;
         this.transmissionRepository = transmissionRepository;
+        this.submissionIntentRepository = submissionIntentRepository;
         this.routingService = routingService;
         this.artifactStorage = artifactStorage;
         this.ecosystemDirectoryService = ecosystemDirectoryService;
@@ -55,17 +58,17 @@ public final class SubmitDocumentService implements SubmitDocumentUseCase {
         var serviceRef = ecosystemDirectoryService.getService(command.serviceId())
                 .orElseThrow(() -> new ServiceNotFoundException(null, command.serviceId()));
 
-        FiscalDocument document = documentRepository
+        var document = documentRepository
                 .findById(command.serviceId(), command.documentId())
                 .orElseThrow(() -> new DocumentNotFoundException(command.documentId()));
 
-        String idempotencyKey = command.idempotencyKey().orElseGet(() -> deriveIdempotencyKey(command, document));
+        String idempotencyKey = command.idempotencyKey().orElseGet(() -> deriveIdempotencyKey(command, document.id()));
         Optional<TransmissionRecord> existing = transmissionRepository
                 .findByIdempotencyKey(command.serviceId(), document.id(), idempotencyKey);
 
         if (existing.isPresent()) {
             TransmissionRecord transmission = existing.get();
-            return new SubmitDocumentResult(document.id(), transmission.id(), transmission.status(), transmission.submittedAt(),
+            return new SubmitDocumentResult(document.id(), transmission.id(), transmission.status().name(), transmission.submittedAt(),
                     transmission.externalReference(), Optional.empty(), java.util.List.of(), true);
         }
 
@@ -78,63 +81,59 @@ public final class SubmitDocumentService implements SubmitDocumentUseCase {
         RenderedDocument rendered = countryModule.renderer().render(document, CountryContext.of(command.serviceId()));
         ArtifactReference artifactReference = storeRenderedArtifact(rendered);
 
-        SubmissionConnector connector = routingService.resolveConnector(command.serviceId(), document.countryCode());
-        SubmissionResult submissionResult = submit(connector, command, document, rendered);
-
-        TransmissionRecord persisted = transmissionRepository.save(new TransmissionRecord(
-                submissionResult.transmissionId(),
+        Instant now = Instant.now();
+        String transmissionId = UUID.randomUUID().toString();
+        TransmissionRecord transmission = new TransmissionRecord(
+                transmissionId,
                 command.serviceId(),
                 document.id(),
-                connector.id().value(),
+                routingService.resolveConnector(command.serviceId(), document.countryCode()).id().value(),
                 idempotencyKey,
-                submissionResult.externalReference(),
-                submissionResult.outcome(),
-                submissionResult.submittedAt(),
-                Instant.now(),
-                Map.of("connectorType", connector.type(), "tenantId", serviceRef.tenantId().value().toString())
-        ));
+                Optional.empty(),
+                TransmissionStatus.PENDING_SUBMISSION,
+                Optional.empty(),
+                now,
+                now,
+                0,
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                0,
+                Map.of("tenantId", serviceRef.tenantId().value().toString())
+        );
+
+        OutboxEvent event = new OutboxEvent(
+                UUID.randomUUID().toString(),
+                "TransmissionRecord",
+                transmissionId,
+                command.serviceId(),
+                SUBMISSION_REQUESTED,
+                new SubmissionRequestedEventPayload(transmissionId, command.serviceId(), document.id()).serialize(),
+                OutboxEventStatus.PENDING,
+                now,
+                Optional.empty(),
+                Optional.empty(),
+                0,
+                Optional.empty(),
+                Optional.empty()
+        );
+
+        submissionIntentRepository.saveIntent(transmission, event);
 
         return new SubmitDocumentResult(
                 document.id(),
-                persisted.id(),
-                persisted.status(),
-                persisted.submittedAt(),
-                persisted.externalReference(),
+                transmission.id(),
+                transmission.status().name(),
+                transmission.submittedAt(),
+                transmission.externalReference(),
                 Optional.ofNullable(artifactReference),
                 report.warnings(),
                 false
         );
     }
 
-    private String deriveIdempotencyKey(SubmitDocumentCommand command, FiscalDocument document) {
-        return command.serviceId().value() + ":" + document.id();
-    }
-
-    private SubmissionResult submit(
-            SubmissionConnector connector,
-            SubmitDocumentCommand command,
-            FiscalDocument document,
-            RenderedDocument rendered
-    ) {
-        try {
-            SubmissionResult result = connector.submit(new SubmissionCommand(
-                    command.serviceId(),
-                    document.countryCode(),
-                    document.id(),
-                    rendered == null ? new RenderedDocument("UNKNOWN", new byte[0], Map.of()) : rendered
-            ));
-
-            if (result == null) {
-                throw new SubmissionFailedException("Submission connector returned null result");
-            }
-
-            return result;
-        } catch (RuntimeException exception) {
-            if (exception instanceof SubmissionFailedException) {
-                throw exception;
-            }
-            throw new SubmissionFailedException("Submission failed for document " + document.id(), exception);
-        }
+    private String deriveIdempotencyKey(SubmitDocumentCommand command, String documentId) {
+        return command.serviceId().value() + ":" + documentId;
     }
 
     private ArtifactReference storeRenderedArtifact(RenderedDocument rendered) {

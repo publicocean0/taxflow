@@ -33,11 +33,17 @@ import com.acme.einvoice.country.spi.ValidationMessage;
 import com.acme.einvoice.country.spi.ValidationReport;
 import com.acme.einvoice.domain.model.DocumentLine;
 import com.acme.einvoice.domain.model.FiscalDocument;
+import com.acme.einvoice.domain.model.OutboxEvent;
+import com.acme.einvoice.domain.model.OutboxEventStatus;
 import com.acme.einvoice.domain.model.Party;
 import com.acme.einvoice.domain.model.TaxCategory;
 import com.acme.einvoice.domain.model.TransmissionRecord;
+import com.acme.einvoice.domain.model.TransmissionStatus;
 import com.acme.einvoice.domain.repository.FiscalDocumentRepository;
-import com.acme.einvoice.domain.repository.TransmissionRepository;
+import com.acme.einvoice.persistence.repository.InMemoryOutboxEventRepository;
+import com.acme.einvoice.persistence.repository.InMemorySubmissionIntentRepository;
+import com.acme.einvoice.persistence.repository.InMemoryTransmissionRepository;
+import com.acme.einvoice.persistence.repository.InMemoryTransmissionStatusUpdateRepository;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -55,41 +61,67 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class SubmitDocumentServiceTest {
 
     @Test
-    void submit_happyPath_andIdempotencyReplay() {
-        TenantId tenantId = TenantId.random();
-        ServiceId serviceId = ServiceId.random();
-        CountryCode italy = CountryCode.of("IT");
-        TestFiscalDocument document = new TestFiscalDocument("3fa85f64-5717-4562-b3fc-2c963f66afa1", serviceId, italy, 0);
+    void submit_intentCreatesPendingTransmissionAndOutbox_andReplayIsIdempotent() {
+        Fixture fixture = fixture(ValidationReport.valid(), false);
 
-        RecordingConnector connector = new RecordingConnector(ConnectorId.of("SDI_DIRECT"));
-        SubmitDocumentService service = service(document, tenantConfig(tenantId, serviceId, italy, connector.id()), connector, ValidationReport.valid(), tenantId);
+        SubmitDocumentResult first = fixture.submitService.execute(new SubmitDocumentCommand(fixture.serviceId, fixture.document.id()));
+        SubmitDocumentResult replay = fixture.submitService.execute(new SubmitDocumentCommand(fixture.serviceId, fixture.document.id()));
 
-        SubmitDocumentResult first = service.execute(new SubmitDocumentCommand(serviceId, document.id()));
-        SubmitDocumentResult replay = service.execute(new SubmitDocumentCommand(serviceId, document.id()));
-
-        assertEquals("SUBMITTED", first.outcome());
+        assertEquals("PENDING_SUBMISSION", first.outcome());
         assertNotNull(first.renderedArtifact().orElseThrow().id());
         assertTrue(replay.idempotentReplay());
-        assertEquals(1, connector.calls());
+
+        TransmissionRecord transmission = fixture.transmissionRepository.findById(first.transmissionId()).orElseThrow();
+        assertEquals(TransmissionStatus.PENDING_SUBMISSION, transmission.status());
+
+        OutboxEvent outbox = fixture.outboxRepository.findProcessable(Instant.now(), 10).getFirst();
+        assertEquals(OutboxEventStatus.PENDING, outbox.status());
+    }
+
+    @Test
+    void asyncProcessor_submitsAndMarksOutboxProcessed_andIsSafeOnReprocessing() {
+        Fixture fixture = fixture(ValidationReport.valid(), false);
+        SubmitDocumentResult intent = fixture.submitService.execute(new SubmitDocumentCommand(fixture.serviceId, fixture.document.id()));
+        String eventId = fixture.outboxRepository.findProcessable(Instant.now(), 10).getFirst().id();
+
+        int processed = fixture.processor.processPendingSubmissions(10);
+        int replayProcessed = fixture.processor.processPendingSubmissions(10);
+
+        assertEquals(1, processed);
+        assertEquals(0, replayProcessed);
+        assertEquals(1, fixture.connector.calls());
+
+        TransmissionRecord transmission = fixture.transmissionRepository.findById(intent.transmissionId()).orElseThrow();
+        assertEquals(TransmissionStatus.SUBMITTED, transmission.status());
+
+        OutboxEvent outbox = fixture.outboxRepository.findById(eventId).orElseThrow();
+        assertEquals(OutboxEventStatus.PROCESSED, outbox.status());
+    }
+
+    @Test
+    void asyncProcessor_retryableFailure_movesTransmissionToRetryable() {
+        Fixture fixture = fixture(ValidationReport.valid(), true);
+        SubmitDocumentResult intent = fixture.submitService.execute(new SubmitDocumentCommand(fixture.serviceId, fixture.document.id()));
+        String eventId = fixture.outboxRepository.findProcessable(Instant.now(), 10).getFirst().id();
+
+        fixture.processor.processPendingSubmissions(10);
+
+        TransmissionRecord transmission = fixture.transmissionRepository.findById(intent.transmissionId()).orElseThrow();
+        assertEquals(TransmissionStatus.FAILED_RETRYABLE, transmission.status());
+        OutboxEvent outbox = fixture.outboxRepository.findById(eventId).orElseThrow();
+        assertEquals(OutboxEventStatus.PENDING, outbox.status());
     }
 
     @Test
     void submit_validationFailure_shortCircuitsBeforeConnectorCall() {
-        TenantId tenantId = TenantId.random();
-        ServiceId serviceId = ServiceId.random();
-        CountryCode italy = CountryCode.of("IT");
-        TestFiscalDocument document = new TestFiscalDocument("3fa85f64-5717-4562-b3fc-2c963f66afa2", serviceId, italy, 0);
-
-        RecordingConnector connector = new RecordingConnector(ConnectorId.of("SDI_DIRECT"));
         ValidationReport invalid = ValidationReport.of(List.of(
                 ValidationMessage.error("INV_001", "missing buyer vat", "buyer.vatNumber")
         ));
-
-        SubmitDocumentService service = service(document, tenantConfig(tenantId, serviceId, italy, connector.id()), connector, invalid, tenantId);
+        Fixture fixture = fixture(invalid, false);
 
         assertThrows(ValidationFailedException.class,
-                () -> service.execute(new SubmitDocumentCommand(serviceId, document.id())));
-        assertEquals(0, connector.calls());
+                () -> fixture.submitService.execute(new SubmitDocumentCommand(fixture.serviceId, fixture.document.id())));
+        assertEquals(0, fixture.connector.calls());
     }
 
     @Test
@@ -98,7 +130,7 @@ class SubmitDocumentServiceTest {
         ServiceId serviceId = ServiceId.random();
         CountryCode italy = CountryCode.of("IT");
         ConnectorId connectorId = ConnectorId.of("SDI_DIRECT");
-        RecordingConnector connector = new RecordingConnector(connectorId);
+        RecordingConnector connector = new RecordingConnector(connectorId, false);
 
         DefaultRoutingService routingService = new DefaultRoutingService(
                 new InMemoryCountryModuleRegistry(List.of(countryModule(ValidationReport.valid()))),
@@ -111,32 +143,46 @@ class SubmitDocumentServiceTest {
                 () -> routingService.resolveConnector(ServiceId.random(), italy));
     }
 
-    private static SubmitDocumentService service(
-            FiscalDocument document,
-            TenantFiscalConfiguration configuration,
-            RecordingConnector connector,
-            ValidationReport report,
-            TenantId tenantId
-    ) {
+    private static Fixture fixture(ValidationReport report, boolean connectorFailure) {
+        TenantId tenantId = TenantId.random();
+        ServiceId serviceId = ServiceId.random();
+        CountryCode italy = CountryCode.of("IT");
+        TestFiscalDocument document = new TestFiscalDocument("3fa85f64-5717-4562-b3fc-2c963f66afa1", serviceId, italy, 0);
+        RecordingConnector connector = new RecordingConnector(ConnectorId.of("SDI_DIRECT"), connectorFailure);
+
         TestFiscalDocumentRepository repository = new TestFiscalDocumentRepository();
         repository.save(document);
         CountryModule countryModule = countryModule(report);
         DefaultRoutingService routingService = new DefaultRoutingService(
                 new InMemoryCountryModuleRegistry(List.of(countryModule)),
                 new InMemoryConnectorRegistry(List.of(connector)),
-                new InMemoryTenantConfigurationService(Map.of(document.serviceId(), configuration))
+                new InMemoryTenantConfigurationService(Map.of(serviceId, tenantConfig(tenantId, serviceId, italy, connector.id())))
         );
 
-        return new SubmitDocumentService(
+        InMemoryTransmissionRepository transmissionRepository = new InMemoryTransmissionRepository();
+        InMemoryOutboxEventRepository outboxEventRepository = new InMemoryOutboxEventRepository();
+
+        SubmitDocumentService submitService = new SubmitDocumentService(
                 repository,
-                new TestTransmissionRepository(),
+                transmissionRepository,
+                new InMemorySubmissionIntentRepository(transmissionRepository, outboxEventRepository),
                 routingService,
                 new InMemoryArtifactStorage(),
                 new InMemoryEcosystemDirectoryService(
                         Map.of(tenantId, new EcosystemTenantReference(tenantId, "Tenant")),
-                        Map.of(tenantId, List.of(new EcosystemServiceReference(tenantId, document.serviceId(), "Svc")))
+                        Map.of(tenantId, List.of(new EcosystemServiceReference(tenantId, serviceId, "Svc")))
                 )
         );
+
+        SubmissionExecutionProcessor processor = new SubmissionExecutionProcessor(
+                outboxEventRepository,
+                transmissionRepository,
+                new InMemoryTransmissionStatusUpdateRepository(),
+                repository,
+                routingService
+        );
+
+        return new Fixture(serviceId, document, connector, submitService, processor, transmissionRepository, outboxEventRepository);
     }
 
     private static CountryModule countryModule(ValidationReport report) {
@@ -160,16 +206,33 @@ class SubmitDocumentServiceTest {
         );
     }
 
+    private record Fixture(
+            ServiceId serviceId,
+            TestFiscalDocument document,
+            RecordingConnector connector,
+            SubmitDocumentService submitService,
+            SubmissionExecutionProcessor processor,
+            InMemoryTransmissionRepository transmissionRepository,
+            InMemoryOutboxEventRepository outboxRepository
+    ) {}
+
     private static final class RecordingConnector implements SubmissionConnector {
         private final ConnectorId id;
+        private final boolean shouldFail;
         private int calls;
 
-        private RecordingConnector(ConnectorId id) { this.id = id; }
+        private RecordingConnector(ConnectorId id, boolean shouldFail) {
+            this.id = id;
+            this.shouldFail = shouldFail;
+        }
 
         @Override public ConnectorId id() { return id; }
         @Override public String type() { return "TEST"; }
         @Override public SubmissionResult submit(SubmissionCommand command) {
             calls++;
+            if (shouldFail) {
+                throw new RuntimeException("temporary connector outage");
+            }
             return new SubmissionResult("3fa85f64-5717-4562-b3fc-2c963f66afa9", "SUBMITTED", Optional.of("EXT-1"), Instant.now());
         }
         int calls() { return calls; }
@@ -222,17 +285,5 @@ class SubmitDocumentServiceTest {
             return Optional.of(found);
         }
         @Override public List<FiscalDocument> findByServiceId(ServiceId serviceId) { return map.values().stream().toList(); }
-    }
-
-    private static final class TestTransmissionRepository implements TransmissionRepository {
-        private final Map<String, TransmissionRecord> map = new java.util.concurrent.ConcurrentHashMap<>();
-        @Override public TransmissionRecord save(TransmissionRecord transmissionRecord) {
-            map.put(transmissionRecord.submissionIdempotencyKey(), transmissionRecord);
-            return transmissionRecord;
-        }
-
-        @Override public Optional<TransmissionRecord> findByIdempotencyKey(ServiceId serviceId, String documentId, String idempotencyKey) {
-            return Optional.ofNullable(map.get(idempotencyKey));
-        }
     }
 }

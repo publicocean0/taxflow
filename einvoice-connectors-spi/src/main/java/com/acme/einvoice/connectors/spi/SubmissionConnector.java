@@ -1,7 +1,7 @@
 package com.acme.einvoice.connectors.spi;
 
 public interface SubmissionConnector {
-    String id();
+    ConnectorId id();
     String type();
     SubmissionResult submit(SubmissionCommand command);
 }

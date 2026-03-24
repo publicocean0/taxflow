@@ -1,5 +1,6 @@
 package com.acme.einvoice.connector.sdi;
 
+import com.acme.einvoice.connectors.spi.ConnectorId;
 import com.acme.einvoice.connectors.spi.SubmissionCommand;
 import com.acme.einvoice.connectors.spi.SubmissionConnector;
 import com.acme.einvoice.connectors.spi.SubmissionResult;
@@ -10,8 +11,8 @@ import java.util.UUID;
 
 public final class SdiSubmissionConnector implements SubmissionConnector {
     @Override
-    public String id() {
-        return "SDI_DIRECT";
+    public ConnectorId id() {
+        return ConnectorId.of("SDI_DIRECT");
     }
 
     @Override

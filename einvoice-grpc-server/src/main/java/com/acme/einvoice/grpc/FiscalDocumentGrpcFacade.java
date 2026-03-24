@@ -1,5 +1,7 @@
 package com.acme.einvoice.grpc;
 
+import com.acme.einvoice.application.exception.DocumentNotFoundException;
+import com.acme.einvoice.application.exception.ValidationFailedException;
 import com.acme.einvoice.application.usecase.SubmitDocumentCommand;
 import com.acme.einvoice.application.usecase.SubmitDocumentResult;
 import com.acme.einvoice.application.usecase.SubmitDocumentUseCase;
@@ -17,6 +19,10 @@ public class FiscalDocumentGrpcFacade {
 
     public SubmitDocumentResult submitDocument(String tenantId, String documentId) {
         SubmitDocumentCommand command = new SubmitDocumentCommand(new TenantId(UUID.fromString(tenantId)), documentId);
-        return submitDocumentUseCase.execute(command);
+        try {
+            return submitDocumentUseCase.execute(command);
+        } catch (DocumentNotFoundException | ValidationFailedException exception) {
+            throw new IllegalArgumentException(exception.getMessage(), exception);
+        }
     }
 }

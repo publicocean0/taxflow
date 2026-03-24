@@ -13,9 +13,15 @@ public record TransmissionRecord(
         String connectorId,
         String submissionIdempotencyKey,
         Optional<String> externalReference,
-        String status,
-        Instant submittedAt,
+        TransmissionStatus status,
+        Optional<Instant> submittedAt,
+        Instant createdAt,
         Instant updatedAt,
+        int processingAttempts,
+        Optional<Instant> nextAttemptAt,
+        Optional<String> lastErrorCode,
+        Optional<String> lastErrorMessage,
+        long statusVersion,
         Map<String, String> details
 ) {
 }

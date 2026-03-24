@@ -12,47 +12,90 @@ La piattaforma centrale resta responsabile di:
 
 TaxFlow integra quel modello tramite porte applicative (`EcosystemDirectoryService`, security ports) senza duplicare IAM o registry.
 
-## Scoping operativo (semplificato)
+## Scoping operativo
 
-In questo step TaxFlow usa **`service_id` come chiave operativa primaria** per:
+TaxFlow usa **`service_id` come chiave operativa primaria** per:
 - routing connector,
 - lookup documenti,
 - idempotency submission,
 - tracking transmission.
 
-Il `tenant_id` viene risolto a partire dal `service_id` tramite directory ecosistemica (proiezione locale opzionale).
+Il `tenant_id` resta dato derivato dal service directory.
 
-## Moduli
+## Reliability model (intent + async execution)
 
-- `einvoice-common`: value object condivisi (`TenantId`, `ServiceId`, riferimenti ecosistema).
-- `einvoice-domain`: modello + port di repository.
-- `einvoice-application`: orchestrazione submit e porte di integrazione.
-- `einvoice-persistence`: schema SQL CockroachDB-ready e adapter repository iniziali in-memory.
+Il submit ora è separato in due fasi:
 
-## Schema persistence introdotto
+1. **Submit intent (sincrona e breve)**
+   - valida richiesta e documento,
+   - crea `transmission_record` in `PENDING_SUBMISSION`,
+   - scrive evento `SubmissionRequested` in `outbox_event`,
+   - ritorna subito un riferimento trasmissione.
 
-Migrazione: `einvoice-persistence/src/main/resources/db/migration/V1__initial_taxflow_schema.sql`.
+2. **Execution async (fuori transazione originaria)**
+   - worker/processor legge outbox,
+   - prova claim con transizione stato outbox,
+   - esegue `connector.submit` fuori da transazioni DB lunghe,
+   - aggiorna stato trasmissione e outbox.
+
+Questo evita side-effect remoti dentro la transazione iniziale e rende il modello più sicuro per CockroachDB e multi-node at-least-once processing.
+
+## Transmission lifecycle
+
+`TransmissionStatus` (foundation):
+- `PENDING_SUBMISSION`
+- `SUBMITTING`
+- `SUBMITTED`
+- `STATUS_PENDING`
+- `ACCEPTED`
+- `REJECTED`
+- `FAILED_RETRYABLE`
+- `FAILED_FINAL`
+- `CANCELLED`
+
+La lifecycle trasmissione è separata dagli stati esterni country/connector. Le integrazioni traducono stato esterno verso stato interno tramite una fase di mapping successiva.
+
+## Outbox pattern foundation
+
+`outbox_event` gestisce:
+- `status` (`PENDING`, `PROCESSING`, `PROCESSED`),
+- `processing_attempts`,
+- `processing_started_at`, `processed_at`,
+- `next_attempt_at`, `last_error`.
+
+Il processor è idempotente e multi-node safe su base DB-state:
+- claim eventi via transizione stato,
+- tolleranza duplicati,
+- retry su failure retryable.
+
+## Status update foundation (polling/webhook-ready)
+
+È introdotto `transmission_status_update` per acquisire eventi esterni normalizzati:
+- sorgente (`source`),
+- codice esterno,
+- stato interno mappato,
+- payload raw,
+- metadata.
+
+Questo abilita futuri flussi polling/webhook senza accoppiare il core a uno specifico provider.
+
+## Schema persistence
+
+Migrazioni:
+- `V1__initial_taxflow_schema.sql`
+- `V2__transmission_outbox_reliability_foundation.sql`
 
 Tabelle core:
 - `fiscal_document`
 - `transmission_record`
 - `document_artifact`
 - `outbox_event`
-
-Tabelle proiezione locale directory:
-- `ecosystem_tenant_ref`
-- `ecosystem_service_ref`
-
-### Scelte CockroachDB-oriented
-- PK UUID ovunque.
-- Niente serial/bigserial.
-- `version` per optimistic concurrency su `fiscal_document`.
-- Vincolo idempotenza su `transmission_record(service_id, document_id, submission_idempotency_key)`.
-- Campi canonici in colonna + JSONB per estensioni.
+- `transmission_status_update`
 
 ## Deferred
 
-- Adapter JDBC/Cockroach reale (al posto in-memory).
-- Dispatcher outbox.
-- Client remoto directory ecosistema con caching.
-- Object storage reale per payload artifact.
+- adapter JDBC/Cockroach reale (al posto in-memory),
+- scheduler distribuito/cron robusto,
+- broker reale (Kafka/RabbitMQ) opzionale,
+- webhook receiver HTTP e signature verification,
+- regole di reconciliation connector-specific.

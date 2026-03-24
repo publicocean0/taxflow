@@ -22,6 +22,8 @@ import com.acme.einvoice.connectors.spi.ConnectorId;
 import com.acme.einvoice.country.it.ItalyCountryModule;
 import com.acme.einvoice.country.spi.ValidationReport;
 import com.acme.einvoice.domain.repository.FiscalDocumentRepository;
+import com.acme.einvoice.persistence.repository.InMemoryOutboxEventRepository;
+import com.acme.einvoice.persistence.repository.InMemorySubmissionIntentRepository;
 import com.acme.einvoice.persistence.repository.InMemoryTransmissionRepository;
 
 import java.util.List;
@@ -75,9 +77,13 @@ public final class Application {
         );
 
         FiscalDocumentRepository documentRepository = new InMemoryBootstrapDocumentRepository();
+        InMemoryTransmissionRepository transmissionRepository = new InMemoryTransmissionRepository();
+        InMemoryOutboxEventRepository outboxEventRepository = new InMemoryOutboxEventRepository();
+
         SubmitDocumentService submitDocumentService = new SubmitDocumentService(
                 documentRepository,
-                new InMemoryTransmissionRepository(),
+                transmissionRepository,
+                new InMemorySubmissionIntentRepository(transmissionRepository, outboxEventRepository),
                 routingService,
                 new InMemoryArtifactStorage(),
                 new InMemoryEcosystemDirectoryService(

@@ -1,0 +1,29 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.acme</groupId>
+  <artifactId>einvoice-platform</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+
+  <properties>
+    <maven.compiler.source>21</maven.compiler.source>
+    <maven.compiler.target>21</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <modules>
+    <module>einvoice-common</module>
+    <module>einvoice-domain</module>
+    <module>einvoice-country-spi</module>
+    <module>einvoice-connectors-spi</module>
+    <module>einvoice-application</module>
+    <module>einvoice-grpc-contract</module>
+    <module>einvoice-grpc-server</module>
+    <module>einvoice-country-it</module>
+    <module>einvoice-connector-sdi</module>
+    <module>einvoice-bootstrap</module>
+  </modules>
+</project>

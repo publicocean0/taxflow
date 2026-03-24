@@ -7,7 +7,7 @@ service FiscalDocumentService {
 }
 
 message SubmitDocumentRequest {
-  string tenant_id = 1;
+  string service_id = 1;
   string document_id = 2;
 }
 

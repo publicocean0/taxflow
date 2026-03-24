@@ -1,6 +1,6 @@
 package com.acme.einvoice.bootstrap;
 
-import com.acme.einvoice.common.model.TenantId;
+import com.acme.einvoice.common.model.ServiceId;
 import com.acme.einvoice.domain.model.FiscalDocument;
 import com.acme.einvoice.domain.repository.FiscalDocumentRepository;
 
@@ -14,12 +14,17 @@ final class InMemoryBootstrapDocumentRepository implements FiscalDocumentReposit
     }
 
     @Override
-    public Optional<FiscalDocument> findById(String documentId) {
+    public FiscalDocument update(FiscalDocument document, long expectedVersion) {
+        return document;
+    }
+
+    @Override
+    public Optional<FiscalDocument> findById(ServiceId serviceId, String documentId) {
         return Optional.empty();
     }
 
     @Override
-    public List<FiscalDocument> findByTenantId(TenantId tenantId) {
+    public List<FiscalDocument> findByServiceId(ServiceId serviceId) {
         return List.of();
     }
 }

@@ -14,6 +14,7 @@ public record SubmitDocumentResult(
         Instant submittedAt,
         Optional<String> externalReference,
         Optional<ArtifactReference> renderedArtifact,
-        List<ValidationMessage> warnings
+        List<ValidationMessage> warnings,
+        boolean idempotentReplay
 ) {
 }

@@ -27,5 +27,10 @@
       <artifactId>einvoice-connector-sdi</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>com.acme</groupId>
+      <artifactId>einvoice-persistence</artifactId>
+      <version>${project.version}</version>
+    </dependency>
   </dependencies>
 </project>
